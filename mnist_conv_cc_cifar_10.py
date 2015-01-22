@@ -85,15 +85,23 @@ def build_model(input_width, input_height, output_dim,
     l_conv1 = cuda_convnet.Conv2DCCLayer(
         l_in,
         num_filters=64,
+        pad = 1,
         filter_size=(3, 3),
         nonlinearity=lasagne.nonlinearities.rectify,
         W=lasagne.init.Uniform(),
         dimshuffle=dimshuffle,
         )
+    l_pool1 = cuda_convnet.MaxPool2DCCLayer(
+        l_conv1,
+        ds=(3, 3),
+        strides=(2, 2),
+        dimshuffle=dimshuffle,
+        )
 
     l_conv2 = cuda_convnet.Conv2DCCLayer(
-        l_conv1,
+        l_pool1,
         num_filters=64,
+        pad = 1,
         filter_size=(3, 3),
         nonlinearity=lasagne.nonlinearities.rectify,
         W=lasagne.init.Uniform(),
@@ -109,15 +117,23 @@ def build_model(input_width, input_height, output_dim,
     l_conv3 = cuda_convnet.Conv2DCCLayer(
         l_pool2,
         num_filters=64,
+        pad = 1,
         filter_size=(3, 3),
         nonlinearity=lasagne.nonlinearities.rectify,
         W=lasagne.init.Uniform(),
         dimshuffle=dimshuffle,
         )
+    l_pool3 = cuda_convnet.MaxPool2DCCLayer(
+        l_conv3,
+        ds=(3, 3),
+        strides=(2, 2),
+        dimshuffle=dimshuffle,
+        )
 
     l_conv4 = cuda_convnet.Conv2DCCLayer(
-        l_conv3,
+        l_pool3,
         num_filters=64,
+        pad = 1,
         filter_size=(3, 3),
         nonlinearity=lasagne.nonlinearities.rectify,
         W=lasagne.init.Uniform(),
@@ -279,7 +295,7 @@ def main(num_epochs=NUM_EPOCHS):
             mxtime = epoch['number']
 
             os.system('rm -f ' + lastfn)
-            tmpfn = fn + '_accuracy_' + str(mx)
+            tmpfn = fn + '_accuracy_' + str(mx) + '_epoch_' + str(mxtime)
             with open(tmpfn, 'wb') as f:
                 pickle.dump(output_layer, f, -1)
             lastfn = tmpfn
@@ -296,6 +312,6 @@ sys.setrecursionlimit(1000000)
 
 if __name__ == '__main__':
     model = main()
-    fn = 'model_64cp_128cp_128cp_64cp_128_128'
+    fn = 'model_64cp_64cp_64cp_64cp_128_128'
     with open(fn, 'wb') as f:
         pickle.dump(model, f, -1)
