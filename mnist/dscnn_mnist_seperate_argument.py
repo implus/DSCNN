@@ -25,10 +25,14 @@ BATCH_SIZE = 100
 LEARNING_RATE = 0.01
 MOMENTUM = 0.9
 LAMDA = 1.0 # adjust new feature's value weight
-FILE_MODEL = 'model_128+64*dc_64*2**dcp_1024fp_1024fp_mnist'
+FILE_MODEL = 'model_128+64*dc_32*2**dcp_1024fp_1024fp_mnist'
 
 FEATURE_LAYER = 'FEATURE_LAYER_'
 FILE_PREFIX = './mnist_dataset/'
+ARGUMENT_NEW_EDGE = 24
+ARGUMENT_TIMES = 4
+PIC_INIT_EDGE = 28
+LABEL_KIND_NUM = 10
 
 def _load_data(filename='./mnist.pkl.gz'):
     if filename == './mnist.pkl.gz':
@@ -50,12 +54,13 @@ def build_model(input_width, input_height, input_dim, output_dim, dep = 0,
         )
 
     if(dep == 0) :
-        pad_first = 3
+        pad_first = 5
     else :
         pad_first = 1
     l_conv1 = cuda_convnet.Conv2DCCLayer(
         l_in,
         num_filters= 128 + 64 * dep,
+        # num_filters= 16 + 16* dep,
         pad = pad_first,
         filter_size=(3, 3),
         nonlinearity=lasagne.nonlinearities.rectify,
@@ -66,6 +71,7 @@ def build_model(input_width, input_height, input_dim, output_dim, dep = 0,
     l_conv2 = cuda_convnet.Conv2DCCLayer(
         l_conv1,
         num_filters= 64 * (2**dep),
+        # num_filters= 16 * (2**dep),
         pad = 1,
         filter_size=(3, 3),
         nonlinearity=lasagne.nonlinearities.rectify,
@@ -133,11 +139,11 @@ def create_iter_functions_seperate(model, X_tensor_type = T.tensor4,
 
     loss_train = loss(model.get_output(X_batch))
     loss_eval  = loss(model.get_output(X_batch, deterministic = True))
+    eval = model.get_output(X_batch, deterministic = True)
 
-    pred = T.argmax(
-        model.get_output(X_batch, deterministic = True), axis = 1)
-
-    accuracy = T.mean(T.eq(pred, y_batch))
+    # pred = T.argmax(
+    #   model.get_output(X_batch, deterministic = True), axis = 1)
+    # accuracy = T.mean(T.eq(pred, y_batch))
 
     all_params = lasagne.layers.get_all_params(model)
     updates = lasagne.updates.nesterov_momentum(
@@ -149,13 +155,48 @@ def create_iter_functions_seperate(model, X_tensor_type = T.tensor4,
         )
 
     iter_valid = theano.function(
-        [X_batch, y_batch], [loss_eval, accuracy],
+        [X_batch, y_batch], [loss_eval, eval],
+        )
+
+    X_result = T.fmatrix('xr')
+    y_result = T.ivector('yr')
+    pred = T.argmax(X_result, axis = 1)
+    accuracy = T.mean(T.eq(pred, y_result))
+
+    iter_result  = theano.function(
+        [X_result, y_result], accuracy,
         )
 
     return dict(
         train = iter_train,
         valid = iter_valid,
+        result = iter_result,
         )
+
+def data_argument(X, y, 
+                  pic_init_edge = PIC_INIT_EDGE, 
+                  argument_times = ARGUMENT_TIMES, 
+                  argument_new_edge = ARGUMENT_NEW_EDGE):
+    # 28 x 28 -> 24 x 24, random choose 4
+    n = X.shape[0]
+    X= X.reshape((n, pic_init_edge, pic_init_edge))
+    nX = np.zeros((n * argument_times, argument_new_edge, argument_new_edge))
+    ny = np.zeros((n * argument_times,))
+    for i in range(n):
+        t = X[i].reshape((pic_init_edge, pic_init_edge)) * 255.0
+        t = np.cast['uint8'](t)
+        img = Image.fromarray(t, mode = "L")
+        for j in range(4):
+            sx = random.randint(0, -argument_new_edge + pic_init_edge + 1)
+            sy = random.randint(0, -argument_new_edge + pic_init_edge + 1)
+            w = i * 4 + j
+            ny[w] = y[i]
+            nX[w] = np.array(img.crop((sx, sy, sx + argument_new_edge, sy + argument_new_edge))) 
+            if i == 0 and j == 0:
+                print("argu one pic,", nX[w], " true label is,", ny[w])
+            nX[w] = nX[w] / 255.0
+    return nX, ny
+
 
 def predeal(data_filename_prefix_train, 
             data_filename_prefix_valid, 
@@ -170,12 +211,15 @@ def predeal(data_filename_prefix_train,
     X_test, y_test = data[2]
 
 
+    X_train, y_train = data_argument(X_train, y_train)
+    X_test, y_test = data_argument(X_test, y_test)
+
     # data is 0.5 shuliangji in mnist
     # reshape for convolutions
-    X_train = X_train.reshape((X_train.shape[0], 1, 28, 28)) 
+    X_train = X_train.reshape((X_train.shape[0], 1, ARGUMENT_NEW_EDGE, ARGUMENT_NEW_EDGE)) 
     X_train = np.cast["float32"](X_train)
     y_train = np.cast['int32'](y_train) 
-    X_test = X_test.reshape((X_test.shape[0], 1, 28, 28))
+    X_test = X_test.reshape((X_test.shape[0], 1, ARGUMENT_NEW_EDGE, ARGUMENT_NEW_EDGE))
     X_test = np.cast["float32"](X_test)
     y_test = np.cast['int32'](y_test)
     X_valid = X_test
@@ -234,7 +278,24 @@ def train(iter_funcs, data_filename_prefix_train, data_filename_prefix_valid, da
             data = np.load(data_valid)
             X_valid = np.cast['float32'](data['data'])
             y_valid = np.cast['int32'](data['labels'])
-            batch_valid_loss, batch_valid_accuracy = iter_funcs['valid'](X_valid, y_valid)
+
+            # batch_valid_loss, batch_valid_accuracy = iter_funcs['valid'](X_valid, y_valid)
+            batch_valid_loss, batch_valid_eval = iter_funcs['valid'](X_valid, y_valid)
+            t = BATCH_SIZE // ARGUMENT_TIMES
+            X_result = np.zeros((t, LABEL_KIND_NUM))
+            y_result = np.zeros((t, ))
+            for w in range(t):
+                batch_slice = slice(w * ARGUMENT_TIMES, (w + 1) * ARGUMENT_TIMES)
+                X_tmp = batch_valid_eval[batch_slice]
+                X_result[w] = np.sum(X_tmp, axis = 0)
+                y_result[w] = y_valid[w * ARGUMENT_TIMES]
+
+            X_result = np.cast['float32'](X_result)
+            y_result = np.cast['int32'](y_result)
+            if b == 0:
+                print("X_result shape:", X_result.shape, "y_result shape", y_result.shape)
+            batch_valid_accuracy = iter_funcs['result'](X_result, y_result)
+
             batch_valid_losses.append(batch_valid_loss)
             batch_valid_accuracies.append(batch_valid_accuracy)
 
@@ -256,7 +317,7 @@ def load_info(data_filename_prefix_train):
         input_width=X_train.shape[2],
         input_height=X_train.shape[3],
         input_dim = X_train.shape[1],
-        output_dim=10,
+        output_dim=LABEL_KIND_NUM,
         )
     
 def savedata_forstack(model,
